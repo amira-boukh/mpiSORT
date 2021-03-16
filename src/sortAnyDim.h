@@ -60,5 +60,6 @@ void parallel_sort_any_dim(						//dimensions for parabitonic
 		char* header,
 		char *chrName,
 		MPI_File mpi_file_split_comm,
-		int uniq_chr
+		int uniq_chr,
+		int write_format
 		);
