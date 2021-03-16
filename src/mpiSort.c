@@ -1,15 +1,19 @@
 /*
-   This file is part of mpiSORT
-   
-   Copyright Institut Curie 2020
-   
-   This software is a computer program whose purpose is to sort SAM file.
-   
-   You can use, modify and/ or redistribute the software under the terms of license (see the LICENSE file for more details).
-   
-   The software is distributed in the hope that it will be useful, but "AS IS" WITHOUT ANY WARRANTY OF ANY KIND. Users are therefore encouraged to test the software's suitability as regards their requirements in conditions enabling the security of their systems and/or data. 
-   
-   The fact that you are presently reading this means that you have had knowledge of the license and that you accept its terms.
+   mpiSORT
+   Copyright (C) 2016-2017 Institut Curie / Institut Pasteur
+
+   mpiSORT is free software; you can redistribute it and/or
+   modify it under the terms of the GNU Lesser General Public
+   License as published by the Free Software Foundation; either
+   version 2.1 of the License, or (at your option) any later version.
+
+   mpiSORT is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser Public License
+   along with mpiSORT.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 /*
@@ -46,17 +50,17 @@
 #include <mpi.h>
 
 #include "compat.h"
-#include "malloc.h"
+
 #include "mergeSort.h"
 #include "parser.h"
 #include "preWrite.h"
 #include "write.h"
-#include "sortAnyDim.h"
-#include "mpiSortUtils.h"
-#include "writeUtils.h"
-#include "qkSort.h"
-#include "parallelBitonicSort2.h"
-#include "parallelBitonicSort3.h"
+#include "sort_any_dim.h"
+#include "mpiSort_utils.h"
+#include "write_utils.h"
+#include "qksort.h"
+#include "parabitonicsort2.h"
+#include "parabitonicsort3.h"
 
 
 /*
@@ -91,13 +95,11 @@
  * https://fs.hlrs.de/projects/craydoc/docs/books/S-2490-40/html-S-2490-40/chapter-sc4rx058-brbethke-paralleliowithmpi.html
  */
 
-// BEGIN> FINE TUNING FINFO FOR WRITING OPERATIONS
 #define NB_PROC  "20" //numer of threads for writing
 #define CB_NODES "12" //numer of server for writing
 #define CB_BLOCK_SIZE  "268435456" /* 256 MBytes - should match FS block size */
 #define CB_BUFFER_SIZE  "536870912" /* multiple of the block size by the number of proc*/
 #define DATA_SIEVING_READ "enable"
-// END> FINE TUNING FINFO FOR WRITING OPERATIONS
 
 /*
  * Capacity constant no need to change it
@@ -112,7 +114,7 @@ static void usage(const char *);
 
 int main (int argc, char *argv[]){
 
-	char *x, *x1, *y, *y1, *z, *z1, *xbuf, *hbuf, *chrNames[MAXNBCHR];
+	char *x, *y, *z, *xbuf, *hbuf, *chrNames[MAXNBCHR];
 	int fd;
 	off_t hsiz;
 	struct stat st;
@@ -122,7 +124,7 @@ int main (int argc, char *argv[]){
 
 	MPI_Offset fileSize, unmapped_start, discordant_start;
 	int num_proc, rank;
-	int res, nbchr, i, paired, uniq_chr, write_format;
+	int res, nbchr, i, paired, write_format;
 	int ierr, errorcode = MPI_ERR_OTHER;
 	char *file_name, *output_dir;
 
@@ -146,19 +148,17 @@ int main (int argc, char *argv[]){
 	int compression_level;
 	size_t fsiz, lsiz, loff;
 	const char *sort_name;
-        char *chr_name_u; //use is case of uniq chromosom. Must be the name of the chromosom, it gives also the name of output file 
 	MPI_Info finfo;
 
 	/* Set default values */
 	compression_level = 3;
 	parse_mode = MODE_OFFSET;
 	sort_name = "coordinate";
-	paired = 0; /* by default reads are considered single*/
-	uniq_chr = 0; 
+	paired = 0;
 	threshold = 0;
 	write_format = 0;
 	/* Check command line */
-	while ((i = getopt(argc, argv, "c:hnpu:q:gsb")) != -1) {
+	while ((i = getopt(argc, argv, "c:hnpq:gsb")) != -1) {
 		switch(i) {
 			case 'c': /* Compression level */
 				compression_level = atoi(optarg);
@@ -173,22 +173,19 @@ int main (int argc, char *argv[]){
 			case 'p': /* Paired reads */
 				paired = 1;
 				break;
-			case 'u': /* We say we have only one chromosome in the file */
-                                uniq_chr = 1;
-				asprintf(&chr_name_u,"%s", optarg);
-                                break;
 			case 'q': /* Quality threshold */
 				threshold = atoi(optarg);
 				break;
 			case 'g':
 				write_format = 0;
 				break;
-			case 'b':
-                                write_format = 1;
-                                break;
 			case 's':
-                                write_format = 2;
-                                break;
+				write_format = 2;
+				break;
+			case 'b':
+                write_format = 1;
+                break;
+
 			default:
 				usage(basename(*argv));
 				return 1;
@@ -217,27 +214,6 @@ int main (int argc, char *argv[]){
 	res = MPI_Comm_size(MPI_COMM_WORLD, &num_proc);
 	assert(res == MPI_SUCCESS);
 
-
-	/* Check if num_proc is a power of 2 or not null */
-        if (num_proc == 0){
-		fprintf(stderr, "Number of processes must be greater than 0 \n");
-		res = MPI_Finalize();
-                assert(res == MPI_SUCCESS);
-                exit(2);
-                //err(1, "You ask for 0 cpu this is not possible !!\n");	
-	}
-
-	
-	//remove this condition to play with non power of 2
-	
-        if ( (num_proc & (num_proc - 1)) ){
-		fprintf(stderr, "Number of processes must be power of two \n");
-                res = MPI_Finalize();
-                assert(res == MPI_SUCCESS);
-                exit(2);
-                //err(1, "Number of processes must be power of two \n");
-	}
-
 	g_rank = rank;
 	g_size = num_proc;
 
@@ -256,50 +232,10 @@ int main (int argc, char *argv[]){
 	assert(fstat(fd, &st) != -1);
 	xbuf = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_FILE|MAP_PRIVATE, fd, 0);
 	assert(xbuf != MAP_FAILED);
-	/* we get the size of the original header */
-	x = xbuf;
-	size_t orig_hsiz = 0;
-	while (*x == '@') {
-                y = strchr(x, '\n');
-                z = x; x = y + 1;
-              
-        }
-	orig_hsiz = x - xbuf;
 
-	/* ignore the first line if equal to @HD     VN:1.0  SO:  */
-        char *xbuf1;
-        x1 = xbuf;
-	xbuf1 = xbuf;
-	char *y2;
-	
-	if (*x1 == '@'){
-		y1 = strchr(x1, '\n');		
-		z1 = x1; x1 = y1 + 1;
-		if (strncmp(z1, "@HD", 3) == 0) {
-			y2 = strstr(z1, "SO:");
-			if (y2 != NULL) xbuf1 = x1;	
-		}					
-	}
-	
 	/* Parse SAM header */
 	memset(chrNames, 0, sizeof(chrNames));
-	x = xbuf1; nbchr = 0;
-	
-	char* ts1 = strdup(file_name);
-	char* ts2 = strdup(file_name);
-
-        char* dir = dirname(ts1);
-        char* filename = basename(ts2);
-	
-	if (uniq_chr){
-
-		//char *tmp_str = filename;
-		//const char *dot = strrchr(filename, '.');
-		//chrNames[nbchr++] = strndup(tmp_str, dot-tmp_str);		
-		chrNames[nbchr++] = strdup(chr_name_u);
-	}
-	
-	assert(*x == '@');
+	x = xbuf; nbchr = 0;
 	while (*x == '@') {
 		y = strchr(x, '\n');
 		z = x; x = y + 1;
@@ -309,26 +245,14 @@ int main (int argc, char *argv[]){
 		assert(y != NULL);
 		z = y + 3;
 		while (*z && !isspace((unsigned char)*z)) z++;
-		if (!uniq_chr) chrNames[nbchr++] = strndup(y + 3, z - y - 3);
+		chrNames[nbchr++] = strndup(y + 3, z - y - 3);
 		assert(nbchr < MAXNBCHR - 2);
-	}	
-	assert(*x != '@');	
-	
-	
-	
-	//in the case of a unique chromosome in the sam
-	//the discordant file is named chrX_discordant
-	if (uniq_chr) {
-		asprintf(&chrNames[nbchr++],"%s_%s", chr_name_u, DISCORDANT);
-		asprintf(&chrNames[nbchr++],"%s_%s", chr_name_u, UNMAPPED);
 	}
-	else {
-		chrNames[nbchr++] = strdup(DISCORDANT);
-		chrNames[nbchr++] = strdup(UNMAPPED);
-	}
+	chrNames[nbchr++] = strdup(UNMAPPED);
+	chrNames[nbchr++] = strdup(DISCORDANT);
 
-	hsiz = x - xbuf1;
-	hbuf = strndup(xbuf1, hsiz);
+	hsiz = x - xbuf;
+	hbuf = strndup(xbuf, hsiz);
 
 	if (rank == 0) {
 		fprintf(stderr, "The size of the file is %zu bytes\n", (size_t)st.st_size);
@@ -341,8 +265,8 @@ int main (int argc, char *argv[]){
 	assert(munmap(xbuf, (size_t)st.st_size) != -1);
 	assert(close(fd) != -1);
 
+	//task FIRST FINE TUNING FINFO FOR READING OPERATIONS
 
-    // BEGIN> FINE TUNING FINFO FOR WRITING OPERATIONS
 
 	MPI_Info_create(&finfo);
 	/*
@@ -365,8 +289,6 @@ int main (int argc, char *argv[]){
 	MPI_Info_set(finfo,"cb_nodes", CB_NODES);
 	MPI_Info_set(finfo,"cb_block_size", CB_BLOCK_SIZE);
 	MPI_Info_set(finfo,"cb_buffer_size", CB_BUFFER_SIZE);
-    
-    // END> FINE TUNING FINFO FOR WRITING OPERATIONS
 
 
 	//we open the input file
@@ -392,7 +314,7 @@ int main (int argc, char *argv[]){
 
 	//We place file offset of each process to the begining of one read's line
 	size_t *goff =(size_t*)calloc((size_t)(num_proc+1), sizeof(size_t));
-	init_goff(mpi_filed,orig_hsiz,input_file_size,num_proc,rank,goff);
+	init_goff(mpi_filed,hsiz,input_file_size,num_proc,rank,goff);
 
 	//We calculate the size to read for each process
 	lsiz = goff[rank+1]-goff[rank];
@@ -463,9 +385,8 @@ int main (int argc, char *argv[]){
 		}
 
 		//Now we parse Read in local_data
-		if (paired == 1 && uniq_chr == 0) parser_paired(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
-		if (paired == 1 && uniq_chr == 1) parser_paired_uniq(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
-		if (paired == 0) parser_single(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
+		parser_paired(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
+
 		//now we copy local_data_tmp in local_data
 		char *p = local_data_tmp;
 		int pos =0;
@@ -500,8 +421,7 @@ int main (int argc, char *argv[]){
 	}
 
 	MPI_Allreduce(&nb_reads_total, &nb_reads_global, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
-	if (rank == 0)
-	 	fprintf(stderr, "rank %d ::::[MPISORT] total reads parsed = %zu \n", rank, nb_reads_global);
+
 	/*
 	 * We care for unmapped and discordants reads
 	 */
@@ -516,10 +436,10 @@ int main (int argc, char *argv[]){
 		MPI_Allreduce(&readNumberByChr[nbchr-s], &total_reads , 1, MPI_LONG_LONG_INT, MPI_SUM, MPI_COMM_WORLD);
 
 		if ((rank == 0) && (s == 1))
-			fprintf(stderr, "rank %d ::::[MPISORT] total read to sort for unmapped = %zu \n", rank, total_reads);
+			fprintf(stderr, "rank %d :::: total read to sort for unmapped = %zu \n", rank, total_reads);
 
 		if ((rank == 0) && (s == 2))
-			fprintf(stderr, "rank %d ::::[MPISORT] total read to sort for discordant = %zu \n", rank, total_reads);
+			fprintf(stderr, "rank %d :::: total read to sort for discordant = %zu \n", rank, total_reads);
 
 		MPI_Barrier(MPI_COMM_WORLD);
 
@@ -695,7 +615,7 @@ int main (int argc, char *argv[]){
 									chrNames[nbchr-s], MPI_Wtime() - time_count);
 					}
 				}
-				else{
+			else{
 					discordant_start = startOffset(g_rank,
 												   g_size,
 												   discordantSize,
@@ -831,7 +751,7 @@ int main (int argc, char *argv[]){
 				chosen_rank++;
 				i1++;
 			}
-			fprintf(stderr, "rank %d ::::[MPISORT] Elected rank = %d \n", rank, chosen_rank);
+			fprintf(stderr, "rank %d :::: Elected rank = %d \n", rank, chosen_rank);
 		}
 
 		//we broadcast the chosen rank
@@ -1025,12 +945,12 @@ int main (int argc, char *argv[]){
 				size_t *local_reads_coordinates_unsorted 	= calloc(local_readNum, sizeof(size_t));
 				size_t *local_reads_coordinates_sorted 		= calloc(local_readNum, sizeof(size_t));
 				size_t *local_offset_source_unsorted 		= calloc(local_readNum, sizeof(size_t));
-				size_t *local_offset_source_sorted 		= calloc(local_readNum, sizeof(size_t));
-				int *local_dest_rank_sorted 			= calloc(local_readNum, sizeof(int));
-				int *local_reads_sizes_unsorted 		= calloc(local_readNum, sizeof(int));
-				int *local_reads_sizes_sorted 			= calloc(local_readNum, sizeof(int));
-				int *local_source_rank_unsorted 		= calloc(local_readNum, sizeof(int));
-				int *local_source_rank_sorted 			= calloc(local_readNum, sizeof(int));
+				size_t *local_offset_source_sorted 			= calloc(local_readNum, sizeof(size_t));
+				int *local_dest_rank_sorted 				= calloc(local_readNum, sizeof(int));
+				int *local_reads_sizes_unsorted 			= calloc(local_readNum, sizeof(int));
+				int *local_reads_sizes_sorted 				= calloc(local_readNum, sizeof(int));
+				int *local_source_rank_unsorted 			= calloc(local_readNum, sizeof(int));
+				int *local_source_rank_sorted 				= calloc(local_readNum, sizeof(int));
 
 				if (split_rank == chosen_split_rank)
 					fprintf(stderr,	"rank %d :::::[MPISORT][MALLOC 1] time spent = %f s\n", split_rank, MPI_Wtime() - time_count);
@@ -1088,10 +1008,7 @@ int main (int argc, char *argv[]){
 				time_count = MPI_Wtime();
 
 				base_arr2 = local_reads_coordinates_unsorted;
-				
-				// For stabilization we replace the qksort with a merge sort
-				//qksort(coord_index, local_readNum, sizeof(size_t), 0, local_readNum - 1, compare_size_t);
-				MergeSortMain(coord_index, local_readNum);
+				qksort(coord_index, local_readNum, sizeof(size_t), 0, local_readNum - 1, compare_size_t);
 
 				if (split_rank == chosen_split_rank)
 						fprintf(stderr,	"rank %d :::::[MPISORT][LOCAL SORT] time spent = %f s\n", split_rank, MPI_Wtime() - time_count);
@@ -1107,13 +1024,13 @@ int main (int argc, char *argv[]){
 
 				/*
 				*   FOR DEBUG
-				*/  
+				*  
 					
 
 				for(j = 0; j < local_readNum - 1; j++){
-					assert( local_reads_coordinates_sorted[j] <= local_reads_coordinates_sorted[j+1]);
+					assert( local_reads_coordinates_sorted[j] < local_reads_coordinates_sorted[j+1]);
 				}
-				
+				*/
 
 				free(coord_index); 				 		//ok
 				free(local_source_rank_unsorted); 	    //ok
@@ -1180,7 +1097,6 @@ int main (int argc, char *argv[]){
 				for (k1 = 0; k1 <  max_num_read; k1++){
 					local_offset_dest_sorted[k1] = local_reads_sizes_sorted[k1];
 					local_total_offset += local_reads_sizes_sorted[k1];
-
 				}
 
 				//we make the cumulative sum of all offsets
@@ -1224,7 +1140,6 @@ int main (int argc, char *argv[]){
 				for (k1 = 0; k1 < max_num_read; k1++){
 					if (local_reads_sizes_sorted[k1] != 0)
 						local_offset_dest_sorted[k1] += offset_to_add;
-						//local_offset_dest_sorted[k1]=max_num_read*split_rank+k1+1;
 					else
 						local_offset_dest_sorted[k1] = 0;
 				}
@@ -1343,7 +1258,7 @@ int main (int argc, char *argv[]){
 						/*
 						 *
 						 * FOR DEBUG
-						 
+						 *
 
 						for(y = 0; y < num_read_for_bruck; y++){
 							assert( local_reads_sizes_sorted_trimmed_for_bruck[y] 		!= 0 );
@@ -1394,7 +1309,7 @@ int main (int argc, char *argv[]){
 					/*
 					 *
 					 * FOR DEBUG
-					 
+					 *
 					for(y = 0; y < num_read_for_bruck; y++){
 						assert( local_reads_sizes_sorted_trimmed_for_bruck[y] 		!= 0 );
 						assert( local_source_rank_sorted_trimmed_for_bruck[y] 		< dimensions);
@@ -1404,7 +1319,6 @@ int main (int argc, char *argv[]){
 						assert( local_reads_coordinates_sorted_trimmed_for_bruck[y] != 0);
 					}
 					*/
-					
 				}
 
 				free(local_reads_coordinates_sorted);
@@ -1563,7 +1477,7 @@ int main (int argc, char *argv[]){
 				/*
 				 *
 				 * FOR DEBUG
-				 
+				 *
 				for ( j = 0; j < local_readNum; j++){
 					assert ( local_reads_coordinates_sorted_trimmed[j]    != 0 );
 					assert ( local_offset_source_sorted_trimmed[j]        != 0 );
@@ -1606,7 +1520,6 @@ int main (int argc, char *argv[]){
 					local_data,
 					goff[rank],
 					first_local_readNum,
-					uniq_chr,
 					write_format
 				);
 
@@ -1645,8 +1558,8 @@ int main (int argc, char *argv[]){
 						headerSize,
 						header,
 						chrNames[i],
-						mpi_file_split_comm,
-						uniq_chr
+						mpi_file_split_comm, 
+						write_format
 					);
 
 			} //end if dimensions < split_rank
@@ -1673,7 +1586,7 @@ int main (int argc, char *argv[]){
 
 
 	free(goff);
-	if (!uniq_chr)	free(local_data);
+	free(local_data);
 
 	MPI_Barrier(MPI_COMM_WORLD);
 
@@ -1698,36 +1611,22 @@ int main (int argc, char *argv[]){
 
 static void usage(const char *prg) {
 
-	fprintf(stderr, "program: %s is a MPI version for sorting SAM file\n"
-		"version: %s\n"
-		"\nusage : mpirun -n TOTAL_PROC %s SAM_FILE OUTPUT_DIRECTORY -q QUALITY -n \n"
-        "\n\tTOTAL_PROC tells how many cores will be used by MPI to parallelize the computation.\n"
-        "\noptions:\n"
-        "\n\t-p if the read are paired-end (by defaut reads are single-end)\n"
-	"\n\t-u if the file contains only one chromosome for instance results from mpiBwaByChr (by defaut all chromosomes are present)\n"
-        "\n\t-q INTEGER\n"
-        "\t     filters the reads according to their quality. Reads quality under the\n"
-        "\t     threshold are ignored in the sorting results. Default is 0 (all reads are kept).\n"
-        "\n\t-n\n"
-        "\t     sorts the read by their query name.\n"
-	"\n\t-s\n"
-	"\t	write the output in sam format.\n"
-        "\ninput: input file is a sam file of paired or single reads\n"
-        "\noutput: set of gz files with\n"
-        "\t* one per chromosome (e.g. chr11.gz)\n"
-        "\t* one for discordant reads (discordant.gz): discordants reads are reads \n"
-        "\t  where one pair aligns on a chromosome and the other pair aligns on \n"
-        "\t  another chromosome \n"
-        "\t* one for unmapped reads (unmapped.gz): unmapped reads are reads without \n"
-        "\t  coordinates on any chromosome \n"
-		"\nexample : mpirun -n 4 %s  HCC1187C_70K_READS.sam ${HOME}/mpiSORTExample -q 0 -n \n"
-        "\nFor more detailed documentation visit:\n"
-        "\thttps://github.com/bioinfo-pf-curie/mpiSORT\n"
-        "\nCopyright (C) 2020  Institut Curie <http://www.curie.fr> \n"
-        "\nThis program comes with ABSOLUTELY NO WARRANTY. \n"
-        "This is free software, and you are welcome to redistribute it \n"
-        "under the terms of the CeCILL License. \n"
-		"\ncontact: Frederic Jarlier (frederic.jarlier@curie.fr) \n"
-		,prg, VERSION, prg, prg);
+	fprintf(stderr, "Program: MPI version for sorting aligned FASTQ data\n"
+		"Version: v%s\n"
+		"Contact 1: Frederic Jarlier (frederic.jarlier@curie.fr) \n"
+		"usage : mpirun -n TOTAL_PROC %s FILE_TO_SORT OUTPUT_FILE -q QUALITY \n"
+		"output : a gz files per chromosome, a gz file of unmapped reads \n"
+		"                 a gz files of discordants reads. \n"
+		"Discordants reads are reads where one pairs align on a chromosome \n"
+		"and the other pair align on another chromosome \n"
+		"Unmapped reads are reads without coordinates on any genome \n"
+		"Requirements : automake 1.15, autoconf 2.69 and a MPI compiler"
+		""
+		""
+		"For perfomances matters the file you want to sort could be \n"
+		"stripped on parallel file system. \n"
+		"With Lustre you mention it with lfs setstripe command like this \n"
+		"lfs set stripe -c stripe_number -s stripe_size folder           \n"
+		,VERSION, prg);
 
 	return; }
