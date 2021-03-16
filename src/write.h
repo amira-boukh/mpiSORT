@@ -40,9 +40,9 @@
 
 #include <mpi.h>
 
-#include "qksort.h"
-#include "write_utils.h"
-#include "parabitonicsort.h"
+#include "qkSort.h"
+#include "writeUtils.h"
+#include "parallelBitonicSort.h"
 
 void writeSam(
 		int rank,
@@ -67,7 +67,7 @@ void writeSam(
 		char* data,
 		size_t offset_data_in_file,
 		size_t original_local_readNum,
-		int write_sam
+		int write_format
 		);
 
 
