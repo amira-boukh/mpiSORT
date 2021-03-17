@@ -124,7 +124,7 @@ int main (int argc, char *argv[]){
 
 	MPI_Offset fileSize, unmapped_start, discordant_start;
 	int num_proc, rank;
-	int res, nbchr, i, paired, write_format;
+	int res, nbchr, i, paired, uniq_chr, write_format;
 	int ierr, errorcode = MPI_ERR_OTHER;
 	char *file_name, *output_dir;
 
@@ -149,16 +149,20 @@ int main (int argc, char *argv[]){
 	size_t fsiz, lsiz, loff;
 	const char *sort_name;
 	MPI_Info finfo;
+	char *chr_name_u;
 
 	/* Set default values */
 	compression_level = 3;
 	parse_mode = MODE_OFFSET;
 	sort_name = "coordinate";
 	paired = 0;
-	threshold = 0;
-	write_format = 0;
+	threshold = 0;	
+	write_format = 0;	
+	uniq_chr = 0;
+
+
 	/* Check command line */
-	while ((i = getopt(argc, argv, "c:hnpq:gsb")) != -1) {
+	while ((i = getopt(argc, argv, "c:hnpu:q:gsb")) != -1) {
 		switch(i) {
 			case 'c': /* Compression level */
 				compression_level = atoi(optarg);
@@ -173,6 +177,10 @@ int main (int argc, char *argv[]){
 			case 'p': /* Paired reads */
 				paired = 1;
 				break;
+			case 'u': /* We say we have only one chromosome in the file */
+                uniq_chr = 1;
+				asprintf(&chr_name_u,"%s", optarg);
+                break;
 			case 'q': /* Quality threshold */
 				threshold = atoi(optarg);
 				break;
@@ -233,6 +241,14 @@ int main (int argc, char *argv[]){
 	xbuf = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_FILE|MAP_PRIVATE, fd, 0);
 	assert(xbuf != MAP_FAILED);
 
+	if (uniq_chr){
+
+		//char *tmp_str = filename;
+		//const char *dot = strrchr(filename, '.');
+		//chrNames[nbchr++] = strndup(tmp_str, dot-tmp_str);		
+		chrNames[nbchr++] = strdup(chr_name_u);
+	}
+
 	/* Parse SAM header */
 	memset(chrNames, 0, sizeof(chrNames));
 	x = xbuf; nbchr = 0;
@@ -245,11 +261,18 @@ int main (int argc, char *argv[]){
 		assert(y != NULL);
 		z = y + 3;
 		while (*z && !isspace((unsigned char)*z)) z++;
-		chrNames[nbchr++] = strndup(y + 3, z - y - 3);
+		if (!uniq_chr) chrNames[nbchr++] = strndup(y + 3, z - y - 3);
 		assert(nbchr < MAXNBCHR - 2);
 	}
-	chrNames[nbchr++] = strdup(UNMAPPED);
-	chrNames[nbchr++] = strdup(DISCORDANT);
+
+	if (uniq_chr) {
+		asprintf(&chrNames[nbchr++],"%s_%s", chr_name_u, DISCORDANT);
+		asprintf(&chrNames[nbchr++],"%s_%s", chr_name_u, UNMAPPED);
+	}
+	else {
+		chrNames[nbchr++] = strdup(DISCORDANT);
+		chrNames[nbchr++] = strdup(UNMAPPED);
+	}
 
 	hsiz = x - xbuf;
 	hbuf = strndup(xbuf, hsiz);
@@ -385,8 +408,9 @@ int main (int argc, char *argv[]){
 		}
 
 		//Now we parse Read in local_data
-		parser_paired(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
-
+		if (paired == 1 && uniq_chr == 0) parser_paired(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
+		if (paired == 1 && uniq_chr == 1) parser_paired_uniq(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
+		if (paired == 0) parser_single(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
 		//now we copy local_data_tmp in local_data
 		char *p = local_data_tmp;
 		int pos =0;
@@ -1559,6 +1583,7 @@ int main (int argc, char *argv[]){
 						header,
 						chrNames[i],
 						mpi_file_split_comm, 
+						uniq_chr,
 						write_format
 					);
 
@@ -1586,7 +1611,9 @@ int main (int argc, char *argv[]){
 
 
 	free(goff);
-	free(local_data);
+
+	if (!uniq_chr)	free(local_data);
+
 
 	MPI_Barrier(MPI_COMM_WORLD);
 
