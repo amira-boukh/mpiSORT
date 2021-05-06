@@ -61,6 +61,9 @@
 #include "qkSort.h"
 #include "parallelBitonicSort2.h"
 #include "parallelBitonicSort3.h"
+#include "bgzf.h"
+
+
 
 
 /*
@@ -110,6 +113,7 @@
 /* Maximum chromosome number */
 #define MAXNBCHR 256
 
+
 static void usage(const char *);
 
 int main (int argc, char *argv[]){
@@ -124,7 +128,7 @@ int main (int argc, char *argv[]){
 
 	MPI_Offset fileSize, unmapped_start, discordant_start;
 	int num_proc, rank;
-	int res, nbchr, i, paired, uniq_chr, write_format;
+	int res, nbchr, i, paired, uniq_chr, write_format,read_format;
 	int ierr, errorcode = MPI_ERR_OTHER;
 	char *file_name, *output_dir;
 
@@ -150,6 +154,10 @@ int main (int argc, char *argv[]){
 	const char *sort_name;
 	MPI_Info finfo;
 	char *chr_name_u;
+	BGZF *fp_header;
+	BGZF* fp ;
+
+
 
 	/* Set default values */
 	compression_level = 3;
@@ -157,12 +165,13 @@ int main (int argc, char *argv[]){
 	sort_name = "coordinate";
 	paired = 0;
 	threshold = 0;	
-	write_format = 0;	
+	write_format = 2;
+	read_format = 2;	
 	uniq_chr = 0;
 
 
 	/* Check command line */
-	while ((i = getopt(argc, argv, "c:hnpu:q:gsb")) != -1) {
+	while ((i = getopt(argc, argv, "c:hnpu:q:gsb:GSB")) != -1) {
 		switch(i) {
 			case 'c': /* Compression level */
 				compression_level = atoi(optarg);
@@ -193,6 +202,15 @@ int main (int argc, char *argv[]){
 			case 'b':
                 write_format = 1;
                 break;
+			case 'G':
+				read_format = 0;
+				break;
+			case 'S':
+				read_format = 2;
+				break;
+			case 'B':
+				read_format = 1;
+				break;
 
 			default:
 				usage(basename(*argv));
@@ -235,11 +253,28 @@ int main (int argc, char *argv[]){
 	}
 
 	/* Process input file */
-	fd = open(file_name, O_RDONLY, 0666);
-	assert(fd != -1);
-	assert(fstat(fd, &st) != -1);
-	xbuf = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_FILE|MAP_PRIVATE, fd, 0);
-	assert(xbuf != MAP_FAILED);
+	if(read_format == 2) {
+		fd = open(file_name, O_RDONLY, 0666);
+		assert(fd != -1);
+		assert(fstat(fd, &st) != -1);
+		xbuf = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_FILE|MAP_PRIVATE, fd, 0);
+		assert(xbuf != MAP_FAILED);
+		//fprintf(stderr,"xbuf : %c", *xbuf);
+	} 
+	else {
+		fp_header = bgzf_open(file_name,"r");
+		assert(fp_header != NULL);
+		fd = open(file_name, O_RDONLY, 0666);
+		assert(fstat(fd, &st) != -1);
+		//xbuf = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_FILE|MAP_PRIVATE, fd, 0);
+		//assert(xbuf != MAP_FAILED);
+		//fprintf(stderr,"xbuf : %c\n", *xbuf);
+		//fprintf(stderr,"fp : %d",fp->uncompressed_block_size);
+		xbuf = malloc(fp_header->uncompressed_block_size);
+		int read = bgzf_read(fp_header,xbuf,fp_header->uncompressed_block_size,rank);
+		//fprintf(stderr,"buffer : %s\n",xbuf);
+	}
+
 
 	if (uniq_chr){
 
@@ -264,6 +299,7 @@ int main (int argc, char *argv[]){
 		if (!uniq_chr) chrNames[nbchr++] = strndup(y + 3, z - y - 3);
 		assert(nbchr < MAXNBCHR - 2);
 	}
+	
 
 	if (uniq_chr) {
 		asprintf(&chrNames[nbchr++],"%s_%s", chr_name_u, DISCORDANT);
@@ -282,11 +318,17 @@ int main (int argc, char *argv[]){
 		fprintf(stderr, "Header has %d+2 references\n", nbchr - 2);
 	}
 	asprintf(&header, "@HD\tVN:1.0\tSO:%s\n%s", sort_name, hbuf);
+	//fprintf(stderr,"header : %s",header);
 
 	free(hbuf);
 
-	assert(munmap(xbuf, (size_t)st.st_size) != -1);
-	assert(close(fd) != -1);
+	if(read_format == 2){
+		assert(munmap(xbuf, (size_t)st.st_size) != -1);
+		assert(close(fd) != -1);
+	} 
+	else {
+		assert(bgzf_close(fp_header) != -1);
+	}
 
 	//task FIRST FINE TUNING FINFO FOR READING OPERATIONS
 
@@ -325,6 +367,7 @@ int main (int argc, char *argv[]){
 	ierr = MPI_File_get_size(mpi_filed, &fileSize);
 	assert(ierr == MPI_SUCCESS);
 	input_file_size = (long long)fileSize;
+	//fprintf(stderr,"file size : %ld", input_file_size);
 
 	/* Get chunk offset and size */
 	fsiz = input_file_size;
@@ -334,16 +377,7 @@ int main (int argc, char *argv[]){
 	tic = MPI_Wtime();
 
 	headerSize = unmappedSize = discordantSize = strlen(header);
-
-	//We place file offset of each process to the begining of one read's line
-	size_t *goff =(size_t*)calloc((size_t)(num_proc+1), sizeof(size_t));
-	init_goff(mpi_filed,hsiz,input_file_size,num_proc,rank,goff);
-
-	//We calculate the size to read for each process
-	lsiz = goff[rank+1]-goff[rank];
-	//NOW WE WILL PARSE
-	size_t j=0;
-	size_t poffset = goff[rank]; //Current offset in file sam
+	//fprintf(stderr,"header size : %ld",strlen(header));
 
 	//nbchr because we add the discordant reads in the structure
 	reads = (Read**)malloc((nbchr)*sizeof(Read));//We allocate a linked list of struct for each Chromosome (last chr = unmapped reads)
@@ -359,75 +393,256 @@ int main (int argc, char *argv[]){
 		readNumberByChr[i]=0;
 	}
 
+	//We place file offset of each process to the begining of one read's line
+	size_t *goff =(size_t*)calloc((size_t)(num_proc+1), sizeof(size_t));
+	size_t j=0;
+	char *local_data = NULL;
+
+
 	toc = MPI_Wtime();
 
-	char *local_data_tmp = malloc(1024*1024);
-	char *local_data =(char*)malloc(((goff[rank+1]-poffset)+1)*sizeof(char));
-	size_t size_tmp= goff[rank+1]-poffset;
-	local_data[goff[rank+1]-poffset] = 0;
-	char *q=local_data;
+	if (read_format == 2){
+		
+		init_goff(mpi_filed,hsiz,input_file_size,num_proc,rank,goff);
+		//fprintf(stderr,"goff : %ld",*goff);
 
-	//We read the file sam and parse
-	while(poffset < goff[rank+1]){
+		//We calculate the size to read for each process
+		lsiz = goff[rank+1]-goff[rank];
+		//NOW WE WILL PARSE
+		size_t poffset = goff[rank]; //Current offset in file sam
 
-		size_t size_to_read = 0;
 
-		if( (goff[rank+1]-poffset) < DEFAULT_INBUF_SIZE ){
-			size_to_read = goff[rank+1]-poffset;
+		char *local_data_tmp = malloc(1024*1024);
+		local_data =(char*)malloc(((goff[rank+1]-poffset)+1)*sizeof(char));
+		size_t size_tmp= goff[rank+1]-poffset;
+		local_data[goff[rank+1]-poffset] = 0;
+		char *q=local_data;
+
+		//We read the file sam and parse
+		while(poffset < goff[rank+1]){
+
+			size_t size_to_read = 0;
+
+			if( (goff[rank+1]-poffset) < DEFAULT_INBUF_SIZE ){
+				size_to_read = goff[rank+1]-poffset;
+			}
+			else{
+				size_to_read = DEFAULT_INBUF_SIZE;
+			}
+
+			// we load the buffer
+			//hold temporary size of SAM
+			//due to limitation in MPI_File_read_at
+			local_data_tmp =(char*)realloc(local_data_tmp, (size_to_read+1)*sizeof(char));
+			local_data_tmp[size_to_read]=0;
+
+			fprintf(stderr, "local data tmp  size : %ld , poffset : %ld , size to read : %ld\n\n",strlen(local_data_tmp),poffset,size_to_read);
+
+			// Original reading part is before 18/09/2015
+			MPI_File_read_at(mpi_filed, (MPI_Offset)poffset, local_data_tmp, size_to_read, MPI_CHAR, MPI_STATUS_IGNORE);
+			size_t local_offset=0;
+			fprintf(stderr,"local data : %ld , size to read : %ld", strlen(local_data_tmp),size_to_read);
+			assert(strlen(local_data_tmp) == size_to_read);
+
+			//we look where is the last line read for updating next poffset
+			size_t offset_last_line = size_to_read-1;
+
+			size_t extra_char=0;
+			while(local_data_tmp[offset_last_line] != '\n'){
+				offset_last_line -- ;
+				extra_char++;
+			}
+
+			local_data_tmp[size_to_read - extra_char]=0;
+			size_t local_data_tmp_sz = strlen(local_data_tmp);
+
+			//If it s the last line of file, we place a last '\n' for the function tokenizer
+			if(rank == num_proc-1 && ((poffset+size_to_read) == goff[num_proc])){
+				local_data_tmp[offset_last_line]='\n';
+			}
+
+			//Now we parse Read in local_data
+			if (paired == 1 && uniq_chr == 0) parser_paired(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
+			if (paired == 1 && uniq_chr == 1) parser_paired_uniq(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
+			if (paired == 0) parser_single(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
+			//now we copy local_data_tmp in local_data
+			char *p = local_data_tmp;
+			int pos =0;
+			while (*p && (pos < local_data_tmp_sz)) {*q=*p;p++;q++;pos++;}
+
+			//we go to the next line
+			poffset+=(offset_last_line+1);
+			local_offset+=(offset_last_line+1);
+
 		}
-		else{
-			size_to_read = DEFAULT_INBUF_SIZE;
-		}
 
-		// we load the buffer
-		//hold temporary size of SAM
-		//due to limitation in MPI_File_read_at
-		local_data_tmp =(char*)realloc(local_data_tmp, (size_to_read+1)*sizeof(char));
-		local_data_tmp[size_to_read]=0;
+		assert(size_tmp == strlen(local_data));
+		//fprintf(stderr,"local data : %s",local_data);
+	
 
-		// Original reading part is before 18/09/2015
-		MPI_File_read_at(mpi_filed, (MPI_Offset)poffset, local_data_tmp, size_to_read, MPI_CHAR, MPI_STATUS_IGNORE);
-		size_t local_offset=0;
-		assert(strlen(local_data_tmp) == size_to_read);
+		fprintf(stderr, "%d (%.2lf)::::: *** FINISH PARSING FILE ***\n", rank, MPI_Wtime()-toc);
 
-		//we look where is the last line read for updating next poffset
-		size_t offset_last_line = size_to_read-1;
-
-		size_t extra_char=0;
-		while(local_data_tmp[offset_last_line] != '\n'){
-			offset_last_line -- ;
-			extra_char++;
-		}
-
-		local_data_tmp[size_to_read - extra_char]=0;
-		size_t local_data_tmp_sz = strlen(local_data_tmp);
-
-		//If it s the last line of file, we place a last '\n' for the function tokenizer
-		if(rank == num_proc-1 && ((poffset+size_to_read) == goff[num_proc])){
-			local_data_tmp[offset_last_line]='\n';
-		}
-
-		//Now we parse Read in local_data
-		if (paired == 1 && uniq_chr == 0) parser_paired(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
-		if (paired == 1 && uniq_chr == 1) parser_paired_uniq(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
-		if (paired == 0) parser_single(local_data_tmp, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
-		//now we copy local_data_tmp in local_data
-		char *p = local_data_tmp;
-		int pos =0;
-		while (*p && (pos < local_data_tmp_sz)) {*q=*p;p++;q++;pos++;}
-
-		//we go to the next line
-		poffset+=(offset_last_line+1);
-		local_offset+=(offset_last_line+1);
-
+		if (local_data_tmp) free(local_data_tmp);
+		malloc_trim(0);
 	}
 
-	assert(size_tmp == strlen(local_data));
+	else {
+		bgzf_byte_t *header_tmp = malloc(2 * sizeof(bgzf_byte_t));
+		int position = 0;
+		int find = 0;
 
-	fprintf(stderr, "%d (%.2lf)::::: *** FINISH PARSING FILE ***\n", rank, MPI_Wtime()-toc);
 
-	if (local_data_tmp) free(local_data_tmp);
-	malloc_trim(0);
+    	//chreche GZIP1 et GZIP2
+		while (find == 0){
+        
+			MPI_File_read_at(mpi_filed, (MPI_Offset)loff, header_tmp, 2, MPI_BYTE, MPI_STATUS_IGNORE);
+			int pos = 0;
+			for ( i = 0; i < 2; i++){
+				if (header_tmp[pos] == GZIP_ID1 && header_tmp[pos+1] == (bgzf_byte_t) GZIP_ID2){
+					find = 1;
+					break;
+				}
+				else pos++;
+			}
+			position = pos;
+			if (find == 1) break;
+			loff +=1;
+		}
+
+	  
+    //trouver GZIP et GZIP2
+    //debut du bloc 
+
+	fprintf(stderr,"pos : %d , loff : %ld, find : %d\n",position,loff,find);
+
+    MPI_Offset offset_header = loff;
+	//fprintf(stderr,"pos : %d , loff : %ld, offset : %lld\n",position,loff,offset_header);
+
+
+	//size_t *goff = NULL; //global offset contain the start offset in the fastq
+    //goff = malloc((num_proc + 1) * sizeof(size_t));
+
+    
+    //MPI gather 
+    //now we exchange the goff buffer between all proc
+	goff[rank] = offset_header; 
+	goff[num_proc] =  (size_t)st.st_size;
+    size_t goff_inter = goff[rank]; //avoid memcpy overlap
+    //rank 0 gather the vector
+    res = MPI_Allgather(&goff_inter, 1, MPI_LONG_LONG_INT, goff , 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
+    assert(res == MPI_SUCCESS);
+
+
+	//we compute the new size according to the shift
+    //We calculate the size to read for each process
+    int ind = rank;
+    size_t size2read = goff[ind+1]-goff[ind];
+    
+    //tant qu pas fin du siz2read
+    bgzf_byte_t header[BLOCK_HEADER_LENGTH];
+	fp = bgzf_open(file_name,"r");
+	assert(fp != NULL);
+
+
+
+	//BGZF* fp;
+	
+	fseeko(fp->file,goff[rank],SEEK_SET);
+	
+	fp->open_mode = 'r';
+	fp->uncompressed_block_size = MAX_BLOCK_SIZE;
+	fp->uncompressed_block = malloc(MAX_BLOCK_SIZE);
+	fp->compressed_block_size = MAX_BLOCK_SIZE;
+	fp->compressed_block = malloc(MAX_BLOCK_SIZE);
+	fp->cache_size = 0;
+	fp->block_address = 0;
+	fp->block_offset = 0;
+	fp->block_length = 0;
+	fp->compress_level = compression_level < 0? Z_DEFAULT_COMPRESSION : compression_level; // Z_DEFAULT_COMPRESSION==-1
+
+	if (fp->compress_level > 9) fp->compress_level = Z_DEFAULT_COMPRESSION;
+	//bgzf_seek(fp,(int64_t) goff[rank],SEEK_SET);
+	if (fp->uncompressed_block == NULL)
+	   			fp->uncompressed_block = malloc(fp->uncompressed_block_size);
+
+    MPI_Offset offset = goff[ind];
+    char *local_data = malloc(1024*1024);
+    size_t addr_tmp = 0;
+    int header_len = 18;
+	//fprintf(stderr,"offset : %ld\n",goff[ind]);
+	//fprintf(stderr,"offset : %d, rank : %d\n",(int64_t) offset, rank);
+
+
+	/*while(1){
+    
+		int size = load_block_from_cache(fp, (int64_t) offset);
+		//fprintf(stderr,"cache : %d\n",size);
+        //debut d'un bloc 
+
+        int size_header = MPI_File_read_at(mpi_filed, offset, header, BLOCK_HEADER_LENGTH, MPI_BYTE, MPI_STATUS_IGNORE);
+        // taille du bloc
+        int bgzf_block_len = unpackInt16((uint8_t*)&header[16]) + 1;
+
+        //lecture bgzf bloc
+        bgzf_byte_t *p = (bgzf_byte_t*) fp->compressed_block;
+		memcpy(p, header, BLOCK_HEADER_LENGTH);
+    	//int count_header = inflate_block(fp, BLOCK_HEADER_LENGTH);
+		//fprintf(stderr,"count_header : %d\n",count_header);
+
+
+        MPI_File_read_at(mpi_filed,  offset + header_len, p, bgzf_block_len, MPI_BYTE, MPI_STATUS_IGNORE);
+        //appelle inflate
+    	int count = inflate_block(fp, bgzf_block_len);
+		//fprintf(stderr,"data uncompressed: %s\n",(char*)fp->uncompressed_block);
+		fprintf(stderr,"count : %d\n",count);
+		fprintf(stderr,"offset : %d offset suivant : %d, rank : %d\n", (int) offset + bgzf_block_len, goff[ind+1], rank);
+
+        
+        //fp-uncomprressed
+        local_data =(char*)realloc(local_data, (strlen(fp->uncompressed_block) + 1)*sizeof(char));
+        local_data[strlen(fp->uncompressed_block)]=0;
+        memmove(local_data + addr_tmp, fp->uncompressed_block, strlen((char*) fp->uncompressed_block) * sizeof(char));
+        addr_tmp += strlen((char*)fp->uncompressed_block);
+
+        
+        offset += bgzf_block_len + header_len;
+        if ( offset > goff[ind + 1]) break;  
+        
+    }*/
+	//fprintf(stderr,"data : %s\n",local_data);
+	char* buffer_read = NULL;
+	size_t tmp_size_buffer = 1024*1024*1024;
+	buffer_read = malloc(tmp_size_buffer+1);
+	//size_t size_uncompressed = 5*size2read;
+	int reading = bgzf_read(fp, buffer_read,size2read,rank);
+	//fprintf(stderr,"reading : %d goff : %d rank %d\n\n", reading, size2read,rank);
+	/*if(rank == 1){
+		fprintf(stderr,"buffer : %s , rank : %d\n\n\n",buffer_read,rank);
+	}*/
+	
+	/*if(rank == 1) {
+		fprintf(stdout,"rank %d , buffer : %s\n\n\n", rank, buffer_read);
+	}*/
+	int count_read; 
+	while(*buffer_read++){
+		if(*buffer_read == '\n') {
+			count_read ++;
+		}
+	}
+	fprintf(stderr,"count read : %d rank %d \n", count_read,rank);
+
+
+    free(fp->uncompressed_block);
+    free(fp->compressed_block);
+    free_cache(fp);
+    free(fp);
+    
+    size_t poffset = goff[rank];
+    if (paired == 1 && uniq_chr == 0) parser_paired(local_data, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
+    if (paired == 1 && uniq_chr == 1) parser_paired_uniq(local_data, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
+    if (paired == 0) parser_single(local_data, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
+	
+	}
 
 	MPI_Barrier(MPI_COMM_WORLD);
 
@@ -1638,22 +1853,36 @@ int main (int argc, char *argv[]){
 
 static void usage(const char *prg) {
 
-	fprintf(stderr, "Program: MPI version for sorting aligned FASTQ data\n"
-		"Version: v%s\n"
-		"Contact 1: Frederic Jarlier (frederic.jarlier@curie.fr) \n"
-		"usage : mpirun -n TOTAL_PROC %s FILE_TO_SORT OUTPUT_FILE -q QUALITY \n"
-		"output : a gz files per chromosome, a gz file of unmapped reads \n"
-		"                 a gz files of discordants reads. \n"
-		"Discordants reads are reads where one pairs align on a chromosome \n"
-		"and the other pair align on another chromosome \n"
-		"Unmapped reads are reads without coordinates on any genome \n"
-		"Requirements : automake 1.15, autoconf 2.69 and a MPI compiler"
-		""
-		""
-		"For perfomances matters the file you want to sort could be \n"
-		"stripped on parallel file system. \n"
-		"With Lustre you mention it with lfs setstripe command like this \n"
-		"lfs set stripe -c stripe_number -s stripe_size folder           \n"
-		,VERSION, prg);
-
-	return; }
+	fprintf(stderr, "program: %s is a MPI version for sorting SAM file\n"
+		"version: %s\n"
+		"\nusage : mpirun -n TOTAL_PROC %s SAM_FILE OUTPUT_DIRECTORY -q QUALITY -n \n"
+        "\n\tTOTAL_PROC tells how many cores will be used by MPI to parallelize the computation.\n"
+        "\noptions:\n"
+        "\n\t-p if the read are paired-end (by defaut reads are single-end)\n"
+	"\n\t-u if the file contains only one chromosome for instance results from mpiBwaByChr (by defaut all chromosomes are present)\n"
+        "\n\t-q INTEGER\n"
+        "\t     filters the reads according to their quality. Reads quality under the\n"
+        "\t     threshold are ignored in the sorting results. Default is 0 (all reads are kept).\n"
+        "\n\t-n\n"
+        "\t     sorts the read by their query name.\n"
+	"\n\t-s\n"
+	"\t	write the output in sam format.\n"
+        "\ninput: input file is a sam file of paired or single reads\n"
+        "\noutput: set of gz files with\n"
+        "\t* one per chromosome (e.g. chr11.gz)\n"
+        "\t* one for discordant reads (discordant.gz): discordants reads are reads \n"
+        "\t  where one pair aligns on a chromosome and the other pair aligns on \n"
+        "\t  another chromosome \n"
+        "\t* one for unmapped reads (unmapped.gz): unmapped reads are reads without \n"
+        "\t  coordinates on any chromosome \n"
+		"\nexample : mpirun -n 4 %s  HCC1187C_70K_READS.sam ${HOME}/mpiSORTExample -q 0 -n \n"
+        "\nFor more detailed documentation visit:\n"
+        "\thttps://github.com/bioinfo-pf-curie/mpiSORT\n"
+        "\nCopyright (C) 2020  Institut Curie <http://www.curie.fr> \n"
+        "\nThis program comes with ABSOLUTELY NO WARRANTY. \n"
+        "This is free software, and you are welcome to redistribute it \n"
+        "under the terms of the CeCILL License. \n"
+		"\ncontact: Frederic Jarlier (frederic.jarlier@curie.fr) \n"
+		,prg, VERSION, prg, prg);
+		return; 
+		}

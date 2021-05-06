@@ -33,6 +33,14 @@
 
 //typedef int8_t bool;
 
+typedef int8_t bgzf_byte_t;
+static const int GZIP_ID1 = 31;
+static const int GZIP_ID2 = 139;
+static const int BLOCK_HEADER_LENGTH = 18;
+static const int MAX_BLOCK_SIZE = 64 * 1024;
+
+
+
 typedef struct {
     int file_descriptor;
     char open_mode;  // 'r' or 'w'
@@ -52,7 +60,7 @@ typedef struct {
     int64_t block_address;
     int block_length;
     int block_offset;
-	int cache_size;
+	  int cache_size;
     const char* error;
 	void *cache; // a pointer to a hash table
 } BGZF;
@@ -89,7 +97,14 @@ int bgzf_close(BGZF* fp);
  * Returns zero on end of file.
  * Returns -1 on error.
  */
-int bgzf_read(BGZF* fp, void* data, int length);
+int bgzf_read(BGZF* fp, void* data, int length,int rank);
+
+int inflate_block(BGZF* fp, int block_length);
+
+static int check_header(const bgzf_byte_t* header);
+
+int unpackInt16(const uint8_t* buffer);
+void free_cache(BGZF *fp);
 
 /*
  * Write length bytes from data to the file.
@@ -97,6 +112,8 @@ int bgzf_read(BGZF* fp, void* data, int length);
  * Returns -1 on error.
  */
 int bgzf_write(BGZF* fp, const void* data, int length);
+
+BGZF *bgzf_read_init();
 
 /*
  * Return a virtual file pointer to the current location in the file.
@@ -129,6 +146,7 @@ int bgzf_read_block(BGZF* fp);
 int bgzf_flush(BGZF* fp);
 int bgzf_flush_try(BGZF *fp, int size);
 int bgzf_check_bgzf(const char *fn);
+int load_block_from_cache(BGZF *fp, int64_t block_address);
 
 #ifdef __cplusplus
 }

@@ -1404,17 +1404,19 @@ void writeSam(
 				//assert(compressed_buff);	
 				//if (rank == master_job_phase_2)
 				//	fprintf(stderr, "rank %d :::: start loop compression \n", rank);
-				fprintf(stderr,"Bytes : %d", bytes_written);
+				//fprintf(stderr,"Bytes : %d", bytes_written);
 
 				while (bytes_written < length) {
 					int copy_length = bgzf_min(block_length - fp->block_offset, length - bytes_written);
+
 					bgzf_byte_t* buffer = fp->uncompressed_block;
 					memcpy(buffer + fp->block_offset, input, copy_length);
 					fp->block_offset += copy_length;
 					input += copy_length;
 					bytes_written += copy_length;
-
-					//fprintf(stderr,"before : %d", fp->block_offset);
+					
+					//fprintf(stderr,"copy length %d\n", bgzf_min(block_length - fp->block_offset, length - bytes_written));
+					//fprintf(stderr,"block length %d,  block offset: %d rank %d\n",block_length, fp->block_offset,rank);
 
 					//if (fp->block_offset == block_length) {
 					//we copy in a temp buffer
@@ -1502,7 +1504,7 @@ void writeSam(
 					while (fp_header->block_offset > 0) {
 						int block_length;
 						block_length = deflate_block(fp_header, fp_header->block_offset);
-						//fprintf(stderr, "rank %d :::: block_length = %d \n", rank, block_length);
+						fprintf(stderr, "rank %d :::: block_length = %d , compressed block : %ld\n", rank, block_length,sizeof(fp_header->compressed_block));
 						//is it necessary?
 						//if (block_length < 0) break;
 
