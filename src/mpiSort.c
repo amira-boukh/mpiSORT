@@ -575,7 +575,7 @@ int main (int argc, char *argv[]){
 	//size_t size_uncompressed = 5*size2read;
 	int reading = bgzf_read(fp, buffer_read,size2read,rank);
 	fprintf(stdout,"%s",buffer_read);
-	
+
 	int count_read; 
 	while(*buffer_read++){
 		if(*buffer_read == '\n') {
