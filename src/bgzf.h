@@ -98,6 +98,7 @@ int bgzf_close(BGZF* fp);
  * Returns -1 on error.
  */
 int bgzf_read(BGZF* fp, void* data, int length,int rank);
+int bgzf_read_header(BGZF* fp, void* data, int length, int rank);
 
 int inflate_block(BGZF* fp, int block_length);
 

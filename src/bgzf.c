@@ -543,35 +543,25 @@ bgzf_read(BGZF* fp, void* data, int length, int rank)
     bgzf_byte_t* output = data;
     int copy_compressed = 0;
 
-    while (copy_compressed < length) {
-        //fprintf(stderr,"block len : %d , block off : %d , rank : %d\n",fp->block_length,fp->block_offset, rank);
+    while (copy_compressed < (length)) {
         int copy_length, available = fp->block_length - fp->block_offset ;
 		bgzf_byte_t *buffer;
-
-        if (available <= 0) {
+        //fprintf(stderr,"block offset : %d available %d rank %d copy %d\n",fp->block_offset, available, rank,copy_compressed);
+        
             if (bgzf_read_block(fp) != 0) {
                 return -1;
             }
-            available = fp->block_length - fp->block_offset;
-            fprintf(stderr,"block offset : %d block length %d available : %d  rank %d , bytes read %d\n", fp->block_offset, fp->block_length,available,rank, bytes_read);
-            //fprintf(stderr,"bytes read : %d , length : %d \n", bytes_read, length);
+            available = fp->block_length-fp->block_offset;
 
             if (available <= 0) {
                 break;
             }
-        }
+       
         copy_compressed += fp->compressed_block_size;
-
-        //fprintf(stderr,"compressed size : %d\n", fp->compressed_block_size);
-        copy_length = bgzf_min(length-bytes_read, available);
-        //fprintf(stderr,"copy : %d\n",copy_length);
+        copy_length = bgzf_min(length, available);
         buffer = fp->uncompressed_block;
-        if(rank == 0){
-            fprintf(stdout,"buffer : %s",buffer);
-        }
-        
         memcpy(output, buffer + fp->block_offset, copy_length);
-        fp->block_offset += copy_length;
+        fp->block_offset += fp->compressed_block_size;
 
         output += copy_length;
         bytes_read += copy_length;
@@ -587,6 +577,7 @@ bgzf_read(BGZF* fp, void* data, int length, int rank)
     }
     return bytes_read;
 }
+
 
 int bgzf_flush(BGZF* fp)
 {

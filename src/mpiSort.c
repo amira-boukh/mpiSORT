@@ -266,10 +266,6 @@ int main (int argc, char *argv[]){
 		assert(fp_header != NULL);
 		fd = open(file_name, O_RDONLY, 0666);
 		assert(fstat(fd, &st) != -1);
-		//xbuf = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_FILE|MAP_PRIVATE, fd, 0);
-		//assert(xbuf != MAP_FAILED);
-		//fprintf(stderr,"xbuf : %c\n", *xbuf);
-		//fprintf(stderr,"fp : %d",fp->uncompressed_block_size);
 		xbuf = malloc(fp_header->uncompressed_block_size);
 		int read = bgzf_read(fp_header,xbuf,fp_header->uncompressed_block_size,rank);
 		//fprintf(stderr,"buffer : %s\n",xbuf);
@@ -401,6 +397,9 @@ int main (int argc, char *argv[]){
 
 	toc = MPI_Wtime();
 
+	/* 
+	Parse SAM File
+	*/
 	if (read_format == 2){
 		
 		init_goff(mpi_filed,hsiz,input_file_size,num_proc,rank,goff);
@@ -486,6 +485,9 @@ int main (int argc, char *argv[]){
 		malloc_trim(0);
 	}
 
+	/* 
+	Decompresse and parse BAM and GZ Files
+	*/
 	else {
 		bgzf_byte_t *header_tmp = malloc(2 * sizeof(bgzf_byte_t));
 		int position = 0;
@@ -518,11 +520,6 @@ int main (int argc, char *argv[]){
     MPI_Offset offset_header = loff;
 	//fprintf(stderr,"pos : %d , loff : %ld, offset : %lld\n",position,loff,offset_header);
 
-
-	//size_t *goff = NULL; //global offset contain the start offset in the fastq
-    //goff = malloc((num_proc + 1) * sizeof(size_t));
-
-    
     //MPI gather 
     //now we exchange the goff buffer between all proc
 	goff[rank] = offset_header; 
@@ -572,57 +569,13 @@ int main (int argc, char *argv[]){
 	//fprintf(stderr,"offset : %ld\n",goff[ind]);
 	//fprintf(stderr,"offset : %d, rank : %d\n",(int64_t) offset, rank);
 
-
-	/*while(1){
-    
-		int size = load_block_from_cache(fp, (int64_t) offset);
-		//fprintf(stderr,"cache : %d\n",size);
-        //debut d'un bloc 
-
-        int size_header = MPI_File_read_at(mpi_filed, offset, header, BLOCK_HEADER_LENGTH, MPI_BYTE, MPI_STATUS_IGNORE);
-        // taille du bloc
-        int bgzf_block_len = unpackInt16((uint8_t*)&header[16]) + 1;
-
-        //lecture bgzf bloc
-        bgzf_byte_t *p = (bgzf_byte_t*) fp->compressed_block;
-		memcpy(p, header, BLOCK_HEADER_LENGTH);
-    	//int count_header = inflate_block(fp, BLOCK_HEADER_LENGTH);
-		//fprintf(stderr,"count_header : %d\n",count_header);
-
-
-        MPI_File_read_at(mpi_filed,  offset + header_len, p, bgzf_block_len, MPI_BYTE, MPI_STATUS_IGNORE);
-        //appelle inflate
-    	int count = inflate_block(fp, bgzf_block_len);
-		//fprintf(stderr,"data uncompressed: %s\n",(char*)fp->uncompressed_block);
-		fprintf(stderr,"count : %d\n",count);
-		fprintf(stderr,"offset : %d offset suivant : %d, rank : %d\n", (int) offset + bgzf_block_len, goff[ind+1], rank);
-
-        
-        //fp-uncomprressed
-        local_data =(char*)realloc(local_data, (strlen(fp->uncompressed_block) + 1)*sizeof(char));
-        local_data[strlen(fp->uncompressed_block)]=0;
-        memmove(local_data + addr_tmp, fp->uncompressed_block, strlen((char*) fp->uncompressed_block) * sizeof(char));
-        addr_tmp += strlen((char*)fp->uncompressed_block);
-
-        
-        offset += bgzf_block_len + header_len;
-        if ( offset > goff[ind + 1]) break;  
-        
-    }*/
-	//fprintf(stderr,"data : %s\n",local_data);
 	char* buffer_read = NULL;
 	size_t tmp_size_buffer = 1024*1024*1024;
 	buffer_read = malloc(tmp_size_buffer+1);
 	//size_t size_uncompressed = 5*size2read;
 	int reading = bgzf_read(fp, buffer_read,size2read,rank);
-	//fprintf(stderr,"reading : %d goff : %d rank %d\n\n", reading, size2read,rank);
-	/*if(rank == 1){
-		fprintf(stderr,"buffer : %s , rank : %d\n\n\n",buffer_read,rank);
-	}*/
+	fprintf(stdout,"%s",buffer_read);
 	
-	/*if(rank == 1) {
-		fprintf(stdout,"rank %d , buffer : %s\n\n\n", rank, buffer_read);
-	}*/
 	int count_read; 
 	while(*buffer_read++){
 		if(*buffer_read == '\n') {
@@ -636,6 +589,7 @@ int main (int argc, char *argv[]){
     free(fp->compressed_block);
     free_cache(fp);
     free(fp);
+	//free(buffer_read);
     
     size_t poffset = goff[rank];
     if (paired == 1 && uniq_chr == 0) parser_paired(local_data, rank, poffset, threshold, nbchr, &readNumberByChr, chrNames, &reads);
